@@ -1,0 +1,6 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readJamLocation,jamLocationUrl,JAM_TABS} from '../lib/navigation.ts';
+test('meeting and tab links survive reload and distinguish navigation entries',()=>{for(const tab of JAM_TABS){const target={eventId:'november-jam',tab},url=jamLocationUrl('https://jam.test/',target);assert.deepEqual(readJamLocation('https://jam.test'+url),target);}assert.notEqual(jamLocationUrl('https://jam.test/',{eventId:'november-jam',tab:'songs'}),jamLocationUrl('https://jam.test/',{eventId:'november-jam',tab:'people'}));});
+test('navigation preserves unrelated URL parameters and existing fragments',()=>{const url=jamLocationUrl('https://jam.test/?source=invite#verify=token',{eventId:'e',tab:'people'});const parsed=new URL(url,'https://jam.test');assert.equal(parsed.searchParams.get('source'),'invite');assert.equal(parsed.hash,'#verify=token');assert.deepEqual(readJamLocation(parsed.href),{eventId:'e',tab:'people'});});
+test('unknown navigation values fall back without becoming routes',()=>{assert.deepEqual(readJamLocation('https://jam.test/?meeting=../../admin&tab=made-up'),{eventId:'demo-event',tab:'songs'});assert.deepEqual(readJamLocation('https://jam.test/'),{eventId:'demo-event',tab:'songs'});});
