@@ -1,3 +1,4 @@
+import { RECORDING_RULES, migrateRecordings, syncMain, mainAssignments, registerMains, assertSongAllowed, buildProgram, allocateRecordings, stopList, songKey } from './program.ts';
 export const ROLES = ['Вокал','Ритм-гитара','Соло-гитара','Бас-гитара','Барабаны','Клавиши','Бэк-вокал'];
 export const ADMIN_LIMIT = 12;
 export const VOCAL_STARS = 3;
@@ -9,10 +10,10 @@ export const DEFAULT_SLOTS = ['Вокал','Ритм-гитара','Соло-г�
 export type Person = {id:string;name:string;roles:string[];max:number;auth?:string;demo?:boolean;nickname?:string;nicknameSource?:'suggested'|'custom';unlinkedBy?:string;deletedAt?:string};
 export type Slot = {id:string;label:string;required:boolean;primary?:boolean};
 export type SongComment = {id:string;by:string;body:string;createdAt:string;readiness?:{application:string;person:string}};
-export type Song = {id:string;title:string;artist:string;duration:number;slots:Slot[];assigned:Record<string,string>;pins:Record<string,boolean>;algorithmAssigned?:Record<string,string>;inclusion:'auto'|'include'|'exclude';comments?:SongComment[];proposedBy?:string;proposedAt?:string;origin?:SongOrigin;shelfHistory?:ShelfHistory[];reservations?:Record<string,{application:string;person:string}>;shelvedAt?:string;shelvedBy?:string;shelfReason?:'unselected'|'unplayed';played?:boolean;shelfReturn?:{event:string;song:string}};
-export type ApplicationMember = {person:string;slot:string;alternatives?:string[];consent:'yes'|'pending'|'no';starred?:boolean};
+export type Song = {id:string;title:string;artist:string;duration:number;slots:Slot[];assigned:Record<string,string>;main?:Record<string,{person:string;by:string;application?:string;manual?:boolean}>;pins:Record<string,boolean>;algorithmAssigned?:Record<string,string>;inclusion:'auto'|'include'|'exclude';comments?:SongComment[];proposedBy?:string;proposedAt?:string;origin?:SongOrigin;shelfHistory?:ShelfHistory[];reservations?:Record<string,{application:string;person:string}>;shelvedAt?:string;shelvedBy?:string;shelfReason?:'unselected'|'unplayed';played?:boolean;shelfReturn?:{event:string;song:string}};
+export type ApplicationMember = {person:string;slot:string;alternatives?:string[];consent:'yes'|'pending'|'no';starred?:boolean;standby?:boolean};
 export type Application = {id:string;song:string;by:string;priority:number;together:'hard'|'soft';createdAt?:string;members:ApplicationMember[]};
-export type JamEvent = {id:string;title:string;date:string;time:string;venue:string;image?:string|null;budget:number;breakMins:number;status:'draft'|'published';demo:boolean;songs:Song[];applications:Application[];program:string[];publishedAt?:string;rulesVersion?:number;deletedAt?:string;allocatedAt?:string};
+export type JamEvent = {id:string;title:string;date:string;time:string;venue:string;image?:string|null;budget:number;breakMins:number;status:'draft'|'published';demo:boolean;songs:Song[];applications:Application[];program:string[];publishedAt?:string;rulesVersion?:number;deletedAt?:string;allocatedAt?:string;programNotes?:Record<string,string>};
 export type State = {people:Person[];events:JamEvent[];admins:string[];log:{at:string;text:string}[]};
 export type Action = {type:string;event?:string;[key:string]:any};
 
@@ -88,12 +89,13 @@ export function visibleState(state:State,admin:boolean,person=''){
    s.shelfHistory=s.shelfHistory.filter(entry=>!!person&&entry.members.includes(person)).map(entry=>({...entry,members:[person],by:undefined}));
    if(!s.shelfHistory.length){delete s.origin;delete s.shelfReturn;}
   }
-  if(e.status==='draft'){for(const s of e.songs){s.assigned=signupAssignments(e,s);delete s.algorithmAssigned;s.pins={};delete s.reservations;}e.program=[];delete e.allocatedAt;}
+  if(e.status==='draft'){for(const s of e.songs){s.assigned=signupAssignments(e,s);delete s.algorithmAssigned;s.pins={};delete s.reservations;}e.program=[];delete e.allocatedAt;delete e.programNotes;}
  }return result;
 }
 // Rebuild bookings from the surviving applications, never from optimizer output.
 // Moderator pins stay in place; preferences, stars, comments and consent are untouched.
 export function resetAllocation(e:JamEvent){
+ if((e.rulesVersion||0)>=RECORDING_RULES){for(const s of e.songs){s.assigned=mainAssignments(e,s);delete s.algorithmAssigned;}delete e.allocatedAt;delete e.programNotes;return;}
  for(const s of e.songs){const bookings=signupAssignments(e,s);s.assigned=Object.fromEntries(Object.entries(s.assigned).filter(([slot])=>s.pins[slot]));delete s.reservations;delete s.algorithmAssigned;
   for(const [slot,person] of Object.entries(bookings))if(!s.pins[slot])s.assigned[slot]=person;
  }
@@ -116,12 +118,12 @@ export function seed(owner='demo', name='Вы'): State {
  const state={people,events:[event],admins:[owner],log:[]}; retainDraftSongs(state);optimize(state,event);return state;
 }
 export function applicants(e:JamEvent,song:string,slot:string) {
- return e.applications.flatMap(a=>a.song===song&&(!a.members.some(m=>m.consent!=='yes')||a.together!=='hard')?a.members.filter(m=>m.slot===slot&&m.consent==='yes').map(m=>({...m,application:a})):[]);
+ return e.applications.flatMap(a=>a.song===song&&(!a.members.some(m=>(e.rulesVersion||0)>=RECORDING_RULES?m.consent==='no':m.consent!=='yes')||a.together!=='hard')?a.members.filter(m=>m.slot===slot&&((e.rulesVersion||0)>=RECORDING_RULES?m.consent!=='no':m.consent==='yes')).map(m=>({...m,application:a})):[]);
 }
 export function isFlexible(m:Pick<ApplicationMember,'slot'>){return m.slot==='__any'||m.slot==='__choice';}
 export function offeredSlots(s:Song,m:Pick<ApplicationMember,'slot'|'alternatives'>){return s.slots.filter(r=>m.slot==='__any'||(m.slot==='__choice'?(m.alternatives||[]).includes(r.id):r.id===m.slot));}
 export function memberPart(s:Song,m:Pick<ApplicationMember,'slot'|'alternatives'>){return m.slot==='__any'?'Любая партия':m.slot==='__choice'?'Одна из: '+offeredSlots(s,m).map(r=>r.label).join(' / '):s.slots.find(r=>r.id===m.slot)?.label||'Партия удалена';}
-export function flexibleApplicants(e:JamEvent,s:Song,slot?:string){return e.applications.flatMap(a=>a.song===s.id&&(a.together!=='hard'||a.members.every(m=>m.consent==='yes'))?a.members.filter(m=>isFlexible(m)&&m.consent==='yes'&&(!slot||offeredSlots(s,m).some(r=>r.id===slot))).map(m=>({...m,application:a})):[]);}
+export function flexibleApplicants(e:JamEvent,s:Song,slot?:string){return e.applications.flatMap(a=>a.song===s.id&&(a.together!=='hard'||a.members.every(m=>(e.rulesVersion||0)>=RECORDING_RULES?m.consent!=='no':m.consent==='yes'))?a.members.filter(m=>isFlexible(m)&&((e.rulesVersion||0)>=RECORDING_RULES?m.consent!=='no':m.consent==='yes')&&(!slot||offeredSlots(s,m).some(r=>r.id===slot))).map(m=>({...m,application:a})):[]);}
 export function readinessPeople(e:JamEvent,s:Song,slot:string){return [...new Set([...applicants(e,s.id,slot),...flexibleApplicants(e,s,slot)].map(m=>m.person))];}
 export function readiness(e:JamEvent,s:Song,slot:string){return readinessPeople(e,s,slot).length;}
 export function isAlgorithmAssignment(e:JamEvent,s:Song,slot:string){return e.status==='draft'&&!!s.assigned[slot]&&!s.pins[slot]&&!s.reservations?.[slot]&&s.algorithmAssigned?.[slot]===s.assigned[slot];}
@@ -136,17 +138,17 @@ export function slotAvailability(e:JamEvent,s:Song,slot:string){return s.assigne
 export function applicationsFor(e:JamEvent,person:string,membersOnly=false){return e.applications.filter(a=>(!membersOnly&&a.by===person)||a.members.some(m=>m.person===person)).sort((a,b)=>Number(b.members.some(m=>m.person===person&&m.consent==='pending'))-Number(a.members.some(m=>m.person===person&&m.consent==='pending')));}
 // Signup availability is independent of the moderator's unpublished draft.
 // Several confirmed people offering the same part remain grey candidates.
-export function signupAssignments(e:JamEvent,s:Song){const assigned:Record<string,string>={};for(const slot of s.slots){const confirmed=[...new Set(applicants(e,s.id,slot.id).map(m=>m.person))];if(confirmed.length===1)assigned[slot.id]=confirmed[0];else if(!confirmed.length){const pending=e.applications.filter(a=>a.song===s.id).flatMap(a=>a.members.filter(m=>m.slot===slot.id&&shouldHold(a,m)));if(pending.length)assigned[slot.id]=pending[0].person;}}return assigned;}
+export function signupAssignments(e:JamEvent,s:Song){if((e.rulesVersion||0)>=RECORDING_RULES)return mainAssignments(e,s);const assigned:Record<string,string>={};for(const slot of s.slots){const confirmed=[...new Set(applicants(e,s.id,slot.id).map(m=>m.person))];if(confirmed.length===1)assigned[slot.id]=confirmed[0];else if(!confirmed.length){const pending=e.applications.filter(a=>a.song===s.id).flatMap(a=>a.members.filter(m=>m.slot===slot.id&&shouldHold(a,m)));if(pending.length)assigned[slot.id]=pending[0].person;}}return assigned;}
 export function signupSong(e:JamEvent,s:Song):Song{return e.status==='published'?s:{...s,assigned:signupAssignments(e,s),pins:{},algorithmAssigned:undefined,reservations:undefined};}
 export function memberSelected(s:Song,m:ApplicationMember){return m.consent!=='no'&&offeredSlots(s,m).some(r=>s.assigned[r.id]===m.person);}
 export function isSelectedForProgram(e:JamEvent,a:Application,person:string){const s=e.songs.find(s=>s.id===a.song);return e.status==='published'&&!!s&&e.program.includes(s.id)&&a.members.some(m=>m.person===person&&memberSelected(s,m));}
 export function personalApplicationGroups(e:JamEvent,person:string,membersOnly=false){const all=applicationsFor(e,person,membersOnly);return e.status==='published'?{selected:all.filter(a=>isSelectedForProgram(e,a,person)),unselected:all.filter(a=>!isSelectedForProgram(e,a,person))}:{selected:all,unselected:[]};}
 export function musicianStats(e:JamEvent,person:string){const counted=e.status==='draft'?{...e,program:e.songs.filter(s=>!s.shelvedAt&&s.inclusion!=='exclude').map(s=>s.id)}:e;return {performances:musicianAppearances(counted)[person]||0,vocals:vocalCounts(counted)[person]||0};}
-export function assignmentNote(state:State,e:JamEvent,s:Song,slot:string){const person=s.assigned[slot];if(!person)return '';if(state.people.find(p=>p.id===person)?.unlinkedBy)return 'Записан по имени, без связи с аккаунтом';return !applicants(e,s.id,slot).some(m=>m.person===person)&&e.applications.some(a=>a.song===s.id&&a.members.some(m=>m.person===person&&m.slot===slot&&m.consent==='pending'))?'Ждём подтверждения':'';}
-function heldPart(s:Song,slot:string){return !!s.assigned[slot]&&(!!s.pins[slot]||!!s.reservations?.[slot]);}
+export function assignmentNote(state:State,e:JamEvent,s:Song,slot:string){if((e.rulesVersion||0)>=RECORDING_RULES)return '';const person=s.assigned[slot];if(!person)return '';if(state.people.find(p=>p.id===person)?.unlinkedBy)return 'Записан по имени, без связи с аккаунтом';return !applicants(e,s.id,slot).some(m=>m.person===person)&&e.applications.some(a=>a.song===s.id&&a.members.some(m=>m.person===person&&m.slot===slot&&m.consent==='pending'))?'Ждём подтверждения':'';}
+function heldPart(s:Song,slot:string){return !!s.assigned[slot]&&(!!s.main?.[slot]||!!s.pins[slot]||!!s.reservations?.[slot]);}
 function shouldHold(a:Application,m:ApplicationMember){return !isFlexible(m)&&m.consent!=='no'&&!(a.together==='hard'&&a.members.some(x=>x.consent==='no'))&&(m.consent==='pending'||a.together==='hard'&&a.members.some(x=>x.consent==='pending'));}
 // A provisional booking occupies a part without pretending that consent exists.
-export function syncReservations(e:JamEvent){if(e.status!=='draft')return false;let changed=false;
+export function syncReservations(e:JamEvent){if(e.status!=='draft')return false;if((e.rulesVersion||0)>=RECORDING_RULES)return syncMain(e);let changed=false;
  for(const s of e.songs){
   for(const [slot,r] of Object.entries(s.reservations||{})){const a=e.applications.find(a=>a.id===r.application&&a.song===s.id),m=a?.members.find(m=>m.slot===slot&&m.person===r.person);
    if(a&&m&&shouldHold(a,m)&&s.assigned[slot]===r.person&&!s.pins[slot]&&!applicants(e,s.id,slot).some(x=>x.person===r.person))continue;
@@ -159,7 +161,7 @@ export function syncReservations(e:JamEvent){if(e.status!=='draft')return false;
   }
  }return changed;
 }
-function releaseApplicationParts(e:JamEvent,a:Application){if(e.status!=='draft')return;const s=e.songs.find(s=>s.id===a.song);if(!s)return;for(const m of a.members)if(!isFlexible(m)&&s.assigned[m.slot]===m.person&&!s.pins[m.slot]&&!applicants(e,s.id,m.slot).some(x=>x.person===m.person)){delete s.assigned[m.slot];if(s.algorithmAssigned)delete s.algorithmAssigned[m.slot];}}
+function releaseApplicationParts(e:JamEvent,a:Application){if((e.rulesVersion||0)>=RECORDING_RULES){syncMain(e);return;}if(e.status!=='draft')return;const s=e.songs.find(s=>s.id===a.song);if(!s)return;for(const m of a.members)if(!isFlexible(m)&&s.assigned[m.slot]===m.person&&!s.pins[m.slot]&&!applicants(e,s.id,m.slot).some(x=>x.person===m.person)){delete s.assigned[m.slot];if(s.algorithmAssigned)delete s.algorithmAssigned[m.slot];}}
 function syncReadinessComments(state:State,e:JamEvent,a:Application){
  const song=e.songs.find(s=>s.id===a.song);if(!song)return false;let changed=false;const offers=a.members.filter(m=>isFlexible(m)&&m.consent!=='no');
  const kept=(song.comments||[]).filter(c=>!c.readiness||c.readiness.application!==a.id||offers.some(m=>m.person===c.readiness!.person));if(kept.length!==(song.comments?.length||0)){song.comments=kept;changed=true;}
@@ -170,7 +172,7 @@ function syncReadinessComments(state:State,e:JamEvent,a:Application){
 }
 function removePersonFromDraft(state:State,event:JamEvent,person:string){let changed=false;
  for(const a of [...event.applications])if(a.members.some(m=>m.person===person)){a.members=a.members.filter(m=>m.person!==person);if(!a.members.length)event.applications=event.applications.filter(x=>x.id!==a.id);syncReadinessComments(state,event,a);changed=true;}
- for(const song of event.songs)for(const [slot,id] of Object.entries(song.assigned))if(id===person){delete song.assigned[slot];delete song.pins[slot];if(song.algorithmAssigned)delete song.algorithmAssigned[slot];if(song.reservations)delete song.reservations[slot];changed=true;}
+ for(const song of event.songs)for(const [slot,id] of Object.entries(song.assigned))if(id===person){delete song.assigned[slot];delete song.pins[slot];if(song.main)delete song.main[slot];if(song.algorithmAssigned)delete song.algorithmAssigned[slot];if(song.reservations)delete song.reservations[slot];changed=true;}
  return changed;
 }
 export function firstCreatorComment(s:Song,e:JamEvent){const by=s.proposedBy||e.applications.find(a=>a.song===s.id)?.by;return s.comments?.find(c=>c.by===by);}
@@ -179,9 +181,9 @@ export function reviewIssues(state:State,e:JamEvent){
  const interested=new Set(e.applications.flatMap(a=>a.members.filter(m=>m.consent==='yes').map(m=>m.person)));
  if(e.allocatedAt)for(const person of interested)if(!assigned[person])issues.push({id:'no-show-'+person,text:`${names(person)}: пока нет выступлений`,kind:'no-show'});
  for(const a of e.applications){const s=e.songs.find(s=>s.id===a.song);if(!s||s.inclusion==='exclude')continue;
-  for(const person of new Set(a.members.filter(m=>m.consent==='pending').map(m=>m.person)))issues.push({id:`pending-${a.id}-${person}`,song:s.id,kind:'pending',text:state.people.find(p=>p.id===person)?.unlinkedBy?`«${s.title}»: согласовать запись по имени ${names(person)}`:`«${s.title}»: ждём подтверждения ${names(person)}`});
+  for(const person of new Set(a.members.filter(m=>(e.rulesVersion||0)<RECORDING_RULES&&m.consent==='pending').map(m=>m.person)))issues.push({id:`pending-${a.id}-${person}`,song:s.id,kind:'pending',text:state.people.find(p=>p.id===person)?.unlinkedBy?`«${s.title}»: согласовать запись по имени ${names(person)}`:`«${s.title}»: ждём подтверждения ${names(person)}`});
   if(a.together==='hard'&&a.members.some(m=>m.consent==='no'))issues.push({id:'declined-'+a.id,song:s.id,kind:'declined',text:`«${s.title}»: участник отказался от совместной заявки`});
-  a.members.forEach((m,i)=>{if(isFlexible(m)&&m.consent!=='no')issues.push({id:`flexible-${a.id}-${i}`,song:s.id,kind:'flexible',text:`«${s.title}»: выбрать партию для ${names(m.person)} (${memberPart(s,m)})`});});
+  a.members.forEach((m,i)=>{if(isFlexible(m)&&m.consent!=='no'&&!memberSelected(s,m))issues.push({id:`flexible-${a.id}-${i}`,song:s.id,kind:'flexible',text:`«${s.title}»: выбрать партию для ${names(m.person)} (${memberPart(s,m)})`});});
  }return issues;
 }
 export function isPrimary(slot:Slot){return slot.required;}
@@ -199,16 +201,17 @@ export function retainDraftSongs(state:State){let changed=ensureNicknames(state)
    for(const r of s.slots){if(legacy&&r.label==='Гитара')r.label='Ритм-гитара';if(legacy&&r.label==='Бас')r.label='Бас-гитара';}
    if(legacy){if(s.slots.length<10&&!s.slots.some(r=>r.label==='Соло-гитара'))s.slots.push({id:uid(),label:'Соло-гитара',required:true});if(s.slots.length<10&&!s.slots.some(r=>r.label==='Вокал (дуэт)'))s.slots.push({id:uid(),label:'Вокал (дуэт)',required:false});}
   }e.rulesVersion=2;changed=true;
- }if((e.rulesVersion||0)<3){for(const s of e.songs)for(const r of s.slots)delete r.primary;e.rulesVersion=3;changed=true;}if((e.rulesVersion||0)<4){const used=new Map<string,Set<string>>();for(const a of e.applications)for(const m of a.members){if(a.priority!==1||m.consent==='no'||!e.songs.find(s=>s.id===a.song)?.slots.some(r=>r.id===m.slot&&isVocal(r)))continue;const songs=used.get(m.person)||new Set<string>();if(songs.has(a.song)||songs.size<VOCAL_STARS){m.starred=true;songs.add(a.song);used.set(m.person,songs);}}e.rulesVersion=4;changed=true;}if((e.rulesVersion||0)<5){for(const a of e.applications)syncReadinessComments(state,e,a);e.rulesVersion=5;changed=true;}const expected=e.songs.filter(s=>s.inclusion!=='exclude').map(s=>s.id);const prev=e.program.filter(id=>expected.includes(id));for(const id of expected)if(!prev.includes(id))prev.push(id);if(prev.join()!==e.program.join()){e.program=prev;changed=true;}}return changed;}
+ }if((e.rulesVersion||0)<3){for(const s of e.songs)for(const r of s.slots)delete r.primary;e.rulesVersion=3;changed=true;}if((e.rulesVersion||0)<4){const used=new Map<string,Set<string>>();for(const a of e.applications)for(const m of a.members){if(a.priority!==1||m.consent==='no'||!e.songs.find(s=>s.id===a.song)?.slots.some(r=>r.id===m.slot&&isVocal(r)))continue;const songs=used.get(m.person)||new Set<string>();if(songs.has(a.song)||songs.size<VOCAL_STARS){m.starred=true;songs.add(a.song);used.set(m.person,songs);}}e.rulesVersion=4;changed=true;}if((e.rulesVersion||0)<5){for(const a of e.applications)syncReadinessComments(state,e,a);e.rulesVersion=5;changed=true;}if(migrateRecordings(e))changed=true;const expected=e.songs.filter(s=>!s.shelvedAt&&s.inclusion!=='exclude').map(s=>s.id);const prev=e.program.filter(id=>expected.includes(id));if(prev.join()!==e.program.join()){e.program=prev;changed=true;}}return changed;}
 export function complete(s:Song){return s.slots.filter(r=>r.required).every(r=>!!s.assigned[r.id]);}
 export function seekingPerformers(s:Song){return hasVacancy(s);}
 export function counts(e:JamEvent){const c:Record<string,number>={};e.songs.filter(s=>e.program.includes(s.id)).forEach(s=>new Set(Object.values(s.assigned).filter(Boolean)).forEach(p=>c[p]=(c[p]||0)+1));return c;}
 export function duration(e:JamEvent){return e.songs.filter(s=>e.program.includes(s.id)).reduce((n,s)=>n+s.duration,0)+(e.program.length?e.breakMins:0);}
-function groupOK(e:JamEvent,s:Song,assign:Record<string,string>){
+export function groupOK(e:JamEvent,s:Song,assign:Record<string,string>){
+ if((e.rulesVersion||0)>=RECORDING_RULES){return Object.entries(assign).filter(([,p])=>p).every(([slot,p])=>{const support=e.applications.filter(a=>a.song===s.id&&a.members.some(m=>m.person===p&&m.consent!=='no'&&offeredSlots(s,m).some(r=>r.id===slot)));return !support.length||support.some(a=>a.together!=='hard'||a.members.every(m=>m.consent!=='no'&&offeredSlots(s,m).some(r=>assign[r.id]===m.person)));});}
  // A musician may offer alternative groups. Every assigned part needs one
  // compatible application, rather than simultaneously satisfying all alternatives.
  return Object.entries(assign).filter(([,p])=>p).every(([slot,p])=>{
-  const support=e.applications.filter(a=>a.song===s.id&&a.members.some(m=>m.person===p&&m.slot===slot&&m.consent==='yes'));
+  const support=e.applications.filter(a=>a.song===s.id&&a.members.some(m=>m.person===p&&m.slot===slot&&((e.rulesVersion||0)>=RECORDING_RULES?m.consent!=='no':m.consent==='yes')));
   return support.length===0||support.some(a=>a.together==='soft'||a.members.every(m=>m.consent==='yes'&&assign[m.slot]===m.person));
  });
 }
@@ -216,7 +219,7 @@ export function warnings(state:State,e:JamEvent){const out:{text:string;song?:st
  for(const s of e.songs.filter(s=>e.program.includes(s.id))){
   const missing=s.slots.filter(r=>r.required&&!s.assigned[r.id]);if(missing.length)out.push({text:`«${s.title}»: нужны ${missing.map(r=>r.label.toLowerCase()).join(', ')}`,song:s.id,kind:'incomplete'});
   if(!groupOK(e,s,s.assigned))out.push({text:`«${s.title}»: нарушено условие «только вместе»`,song:s.id,kind:'group'});
-  for(const [slot,p] of Object.entries(s.assigned))if(p&&!applicants(e,s.id,slot).some(m=>m.person===p))out.push({text:`«${s.title}»: участие ${state.people.find(x=>x.id===p)?.name||p} требует согласования`,song:s.id,kind:'consent'});
+  for(const [slot,p] of Object.entries(s.assigned))if(p&&!s.main?.[slot]&&!applicants(e,s.id,slot).some(m=>m.person===p)&&!flexibleApplicants(e,s,slot).some(m=>m.person===p))out.push({text:`«${s.title}»: участие ${state.people.find(x=>x.id===p)?.name||p} требует согласования`,song:s.id,kind:'consent'});
  }
  for(const p of state.people)if((c[p.id]||0)>p.max)out.push({text:`${p.name}: ${c[p.id]} вокальных выступлений при максимуме ${p.max}`,kind:'load'});
  if(duration(e)>e.budget)out.push({text:`Программа превышает время на ${duration(e)-e.budget} мин`,kind:'time'});
@@ -226,6 +229,7 @@ export function warnings(state:State,e:JamEvent){const out:{text:string;song?:st
 // remain under moderator control. This bounded search is a recommendation,
 // not a proof of a global optimum (hard groups make the problem combinatorial).
 export function optimize(state:State,e:JamEvent){
+ if((e.rulesVersion||0)>=RECORDING_RULES){allocateRecordings(state,e);return;}
  // Clearing a part must not turn its vacancy into a permanent moderator pin.
  for(const s of e.songs)for(const slot of Object.keys(s.pins))if(!s.assigned[slot])delete s.pins[slot];
  syncReservations(e);
@@ -365,7 +369,7 @@ export function applyAction(original:State,action:Action,actor:string):State{
   for(const event of state.events){
    if(event.status==='draft')removePersonFromDraft(state,event,target.id);
    for(const a of event.applications){if(a.by===target.id)a.by=anonymous;for(const m of a.members)if(m.person===target.id)m.person=anonymous;}
-   for(const song of event.songs){for(const slot of Object.keys(song.assigned))if(song.assigned[slot]===target.id)song.assigned[slot]=anonymous;if(song.proposedBy===target.id)song.proposedBy=anonymous;if(song.shelvedBy===target.id)song.shelvedBy=anonymous;if(song.shelfHistory)for(const entry of song.shelfHistory){if(entry.by===target.id)entry.by=anonymous;entry.members=entry.members.map(id=>id===target.id?anonymous:id);}if(song.comments)song.comments=song.comments.filter(c=>c.by!==target.id&&c.readiness?.person!==target.id);for(const reservation of Object.values(song.reservations||{}))if(reservation.person===target.id)reservation.person=anonymous;for(const slot of Object.keys(song.algorithmAssigned||{}))if(song.algorithmAssigned![slot]===target.id)delete song.algorithmAssigned![slot];}
+   for(const song of event.songs){for(const slot of Object.keys(song.assigned))if(song.assigned[slot]===target.id)song.assigned[slot]=anonymous;for(const b of Object.values(song.main||{})){if(b.person===target.id)b.person=anonymous;if(b.by===target.id)b.by=anonymous;}if(song.proposedBy===target.id)song.proposedBy=anonymous;if(song.shelvedBy===target.id)song.shelvedBy=anonymous;if(song.shelfHistory)for(const entry of song.shelfHistory){if(entry.by===target.id)entry.by=anonymous;entry.members=entry.members.map(id=>id===target.id?anonymous:id);}if(song.comments)song.comments=song.comments.filter(c=>c.by!==target.id&&c.readiness?.person!==target.id);for(const reservation of Object.values(song.reservations||{}))if(reservation.person===target.id)reservation.person=anonymous;for(const slot of Object.keys(song.algorithmAssigned||{}))if(song.algorithmAssigned![slot]===target.id)delete song.algorithmAssigned![slot];}
    if(event.status==='draft')syncReservations(event);
   }
   for(const p of state.people)if(p.unlinkedBy===target.id)p.unlinkedBy=anonymous;
@@ -376,29 +380,30 @@ export function applyAction(original:State,action:Action,actor:string):State{
   if(!canManageAdmins(state,actor))throw Error('Снимать права администратора могут только @nikita и @nastya');const target=state.people.find(p=>p.id===action.person&&!p.deletedAt);if(!target?.auth||!state.admins.includes(target.auth))throw Error('Администратор не найден');if(target.auth===actor)throw Error('Нельзя снять свои права администратора');state.admins=state.admins.filter(id=>id!==target.auth);break;
  }
  case 'admin':{const p=state.people.find(p=>p.id===action.person);if(p?.deletedAt||!p?.auth?.startsWith('local_'))throw Error('Права можно дать зарегистрированному участнику');if(!state.admins.includes(p.auth)){if(state.admins.length>=ADMIN_LIMIT)throw Error(`Достигнут лимит: ${ADMIN_LIMIT} администраторов`);state.admins.push(p.auth);}break;}
- case 'newEvent':state.events.push({id:uid(),title:text(action.title),date:text(action.date),time:text(action.time),venue:text(action.venue||'Площадка уточняется'),image:validateEventImage(action.image??null),budget:number(action.budget,15,720),breakMins:15,status:'draft',demo:false,songs:[],applications:[],program:[],rulesVersion:5});break;
+ case 'newEvent':state.events.push({id:uid(),title:text(action.title),date:text(action.date),time:text(action.time),venue:text(action.venue||'Площадка уточняется'),image:validateEventImage(action.image??null),budget:number(action.budget,15,720),breakMins:15,status:'draft',demo:false,songs:[],applications:[],program:[],rulesVersion:RECORDING_RULES});break;
  case 'deleteEvent':e!.deletedAt=new Date().toISOString();break;
  case 'restoreEvent':if(!e!.deletedAt)throw Error('Встреча уже восстановлена');delete e!.deletedAt;break;
  case 'purgeEvent':if(!e!.deletedAt)throw Error('Сначала переместите встречу в корзину');state.events=state.events.filter(ev=>ev.id!==e!.id);break;
  case 'settings':Object.assign(e!,{title:text(action.title),date:text(action.date),time:text(action.time),venue:text(action.venue),...(action.image!==undefined?{image:validateEventImage(action.image)}:{}),budget:number(action.budget,15,720),breakMins:number(action.breakMins,0,120)});break;
  case 'song':{
   if(!song&&e!.songs.length>=60)throw Error('В первой версии поддерживается до 60 песен на встречу');
+  assertSongAllowed(state,e!,text(action.title),text(action.artist));
   const slots:Slot[]=action.slots?.map((r:any)=>({id:song?.slots.some(x=>x.id===r.id)?r.id:uid(),label:text(r.label,1,60),required:!!r.required}));if(!slots?.length||slots.length>10||!slots.some(s=>s.required))throw Error('Добавьте от 1 до 10 партий, хотя бы одну обязательную');
   if(song){
    const removed=song.slots.filter(r=>!slots.some(x=>x.id===r.id));
    if(removed.some(r=>song.assigned[r.id]||e!.applications.some(a=>a.song===song.id&&a.members.some(m=>m.slot===r.id||m.alternatives?.includes(r.id))))&&action.dropPartApplications!==true)throw Error('Сначала снимите заявки и назначения с удаляемой партии');
-   if(removed.length){const ids=new Set(removed.map(r=>r.id));for(const r of removed){delete song.assigned[r.id];delete song.pins[r.id];if(song.algorithmAssigned)delete song.algorithmAssigned[r.id];if(song.reservations)delete song.reservations[r.id];}
-    for(const a of e!.applications.filter(a=>a.song===song.id)){a.members=a.members.filter(m=>!ids.has(m.slot)).filter(m=>{if(m.slot!=='__choice')return true;m.alternatives=(m.alternatives||[]).filter(id=>!ids.has(id));if(m.alternatives.length===1){m.slot=m.alternatives[0];delete m.alternatives;}return m.slot!=='__choice'||!!m.alternatives?.length;});syncReadinessComments(state,e!,a);}
+   if(removed.length){const ids=new Set(removed.map(r=>r.id));for(const r of removed){delete song.assigned[r.id];delete song.pins[r.id];if(song.main)delete song.main[r.id];if(song.algorithmAssigned)delete song.algorithmAssigned[r.id];if(song.reservations)delete song.reservations[r.id];}
+    for(const a of e!.applications.filter(a=>a.song===song.id)){a.members=a.members.filter(m=>!ids.has(m.slot)).filter(m=>{if(m.slot!=='__choice')return true;m.alternatives=(m.alternatives||[]).filter(id=>!ids.has(id));return m.slot!=='__choice'||!!m.alternatives?.length;});syncReadinessComments(state,e!,a);}
     e!.applications=e!.applications.filter(a=>a.song!==song.id||a.members.length>0);
    }
    Object.assign(song,{title:text(action.title),artist:text(action.artist),duration:number(action.duration,1,30),slots});for(const a of e!.applications.filter(a=>a.song===song.id))for(const m of a.members)if(m.starred&&!offeredSlots(song,m).some(isVocal))delete m.starred;syncReservations(e!);
-  }else {const id=uid();const proposal:Song={id,title:text(action.title),artist:text(action.artist),duration:number(action.duration,1,30),slots,assigned:{},pins:{},inclusion:'auto',proposedBy:me.id,proposedAt:new Date().toISOString()};proposal.origin=songOrigin(e!,proposal);if(action.comment?.trim())addComment(proposal);e!.songs.push(proposal);e!.program.push(id);}break;
+  }else {const id=uid();const proposal:Song={id,title:text(action.title),artist:text(action.artist),duration:number(action.duration,1,30),slots,assigned:{},pins:{},inclusion:'auto',proposedBy:me.id,proposedAt:new Date().toISOString()};proposal.origin=songOrigin(e!,proposal);if(action.comment?.trim())addComment(proposal);e!.songs.push(proposal);}break;
  }
  case 'updateApplication':
  case 'apply':{
   const editing=action.type==='updateApplication';
   if(editing){if(!previousApplication||(!admin&&previousApplication.by!==me.id))throw Error('Нельзя изменить чужую заявку');if(action.song&&action.song!==previousApplication.song)throw Error('Нельзя перенести заявку на другую песню');if(action.expectedApplication&&JSON.stringify(action.expectedApplication)!==JSON.stringify(previousApplication))throw Error('Заявка уже изменилась. Откройте её заново');}
-  if(!song||song.shelvedAt)throw Error('Песня не найдена');if(!editing&&e!.applications.length>=600)throw Error('Достигнут лимит заявок для этой встречи');
+  if(!song||song.shelvedAt)throw Error('Песня не найдена');assertSongAllowed(state,e!,song.title,song.artist);if(!editing&&e!.applications.length>=600)throw Error('Достигнут лимит заявок для этой встречи');
   if(!Array.isArray(action.members)||!action.members.length||action.members.length>10)throw Error('Укажите участников');
   const members:Application['members']=action.members.map((m:any)=>{
    let p:Person|undefined;
@@ -420,15 +425,15 @@ export function applyAction(original:State,action:Action,actor:string):State{
    let alternatives:string[]|undefined;
    if(slotId==='__choice'){
     if(!Array.isArray(m.alternatives)||!m.alternatives.length||m.alternatives.length>10||m.alternatives.some((id:any)=>typeof id!=='string'||!song.slots.some(r=>r.id===id)))throw Error('Выберите возможные партии');
-    alternatives=[...new Set(m.alternatives as string[])];if(alternatives.length===1){slotId=alternatives[0];alternatives=undefined;}
+    alternatives=[...new Set(m.alternatives as string[])];
    }
    if(!['__any','__choice'].includes(slotId)&&!song.slots.some(r=>r.id===slotId))throw Error('Проверьте участников и партии');
    if(m.starred&&(p.id!==me.id&&!admin))throw Error('Звёзды другого участника выбирает он сам');
    if(m.starred&&!offeredSlots(song,{slot:slotId,alternatives}).some(isVocal))throw Error('Звёзды доступны только для вокала');
    const vocal=offeredSlots(song,{slot:slotId,alternatives}).some(isVocal),prior=previousApplication?.members.find(x=>x.person===p!.id&&x.slot===slotId&&JSON.stringify([...(x.alternatives||[])].sort())===JSON.stringify([...(alternatives||[])].sort()));
    const starred=vocal&&(editing&&(m.starred===undefined||p.id!==me.id&&!admin)?starredSongs(e!,p.id).has(song.id):!!m.starred);
-   const consent=p.id===me.id||(admin&&action.agreed)?'yes':prior&&previousApplication?.together===(action.together==='hard'?'hard':'soft')?prior.consent:'pending';
-   return {person:p.id,slot:slotId,...(alternatives?{alternatives}:{}),...(starred?{starred:true}:{}),consent};
+   const consent=(e!.rulesVersion||0)>=RECORDING_RULES?'yes':p.id===me.id||(admin&&action.agreed)?'yes':prior&&previousApplication?.together===(action.together==='hard'?'hard':'soft')?prior.consent:'pending';
+   return {person:p.id,slot:slotId,...(alternatives?{alternatives}:{}),...(starred?{starred:true}:{}),consent,...((e!.rulesVersion||0)>=RECORDING_RULES?{standby:prior?.standby??(!!m.standby||isFlexible({slot:slotId})||!!song.main?.[slotId]&&song.main[slotId].person!==p.id)}:{})};
   });
   const fixed=members.filter(m=>!isFlexible(m));if(new Set(fixed.map(m=>m.slot)).size!==fixed.length)throw Error('На каждую партию укажите одного участника');
   if(members.some(m=>isFlexible(m)&&members.filter(x=>x.person===m.person).length>1))throw Error('Для выбора одной из партий укажите участника один раз');
@@ -438,18 +443,18 @@ export function applyAction(original:State,action:Action,actor:string):State{
   else e!.applications.push({id:uid(),song:song.id,by:me.id,priority,createdAt:new Date().toISOString(),together:action.together==='hard'?'hard':'soft',members});
   const starPreferences=new Set(members.filter((m,i)=>(m.person===me.id||admin)&&typeof action.members[i].starred==='boolean'&&offeredSlots(song,m).some(isVocal)).map(m=>m.person));
   for(const person of starPreferences){const starred=members.some(m=>m.person===person&&m.starred&&offeredSlots(song,m).some(isVocal));for(const a of e!.applications.filter(a=>a.song===song.id))for(const m of a.members)if(m.person===person&&m.consent!=='no'&&offeredSlots(song,m).some(isVocal))m.starred=starred;}
-  for(const m of fixed)if(!song.pins[m.slot]&&!song.assigned[m.slot])song.assigned[m.slot]=m.person;syncReservations(e!);if(action.comment?.trim())addComment();syncReadinessComments(state,e!,previousApplication||e!.applications.at(-1)!);break;
+  if((e!.rulesVersion||0)>=RECORDING_RULES){syncMain(e!);registerMains(e!,song,(previousApplication||e!.applications.at(-1)!).id);}else for(const m of fixed)if(!song.pins[m.slot]&&!song.assigned[m.slot])song.assigned[m.slot]=m.person;syncReservations(e!);if(action.comment?.trim())addComment();syncReadinessComments(state,e!,previousApplication||e!.applications.at(-1)!);break;
  }
  case 'comment':addComment();break;
  case 'deleteComment':{const c=song?.comments?.find(c=>c.id===action.commentId);if(!c||(!admin&&c.by!==me.id))throw Error('Нельзя удалить чужой комментарий');song!.comments=song!.comments!.filter(x=>x.id!==c.id);break;}
  case 'resolve':{
   if(!song)throw Error('Песня не найдена');const a=e!.applications.find(a=>a.id===action.application&&a.song===song.id);const m=a?.members[action.member];
   if(!a||!m||!isFlexible(m)||!offeredSlots(song,m).some(r=>r.id===action.slot))throw Error('Эта партия не указана в заявке');
-  if(m.consent!=='yes'||(a.together==='hard'&&a.members.some(x=>x.consent!=='yes')))throw Error('Сначала подтвердите участие музыкантов');
+  if(m.consent==='no'||(a.together==='hard'&&a.members.some(x=>x.consent==='no')))throw Error('Сначала подтвердите участие музыкантов');
   if(a.members.some(x=>x!==m&&x.slot===action.slot))throw Error('Эта партия уже указана у другого участника заявки');
   if(song.assigned[action.slot]&&song.assigned[action.slot]!==m.person&&action.replace!==true)throw Error('Партия уже занята. Сначала освободите её');
   m.slot=action.slot;delete m.alternatives;if(!isVocal(song.slots.find(r=>r.id===m.slot)!))delete m.starred;
-  song.assigned[m.slot]=m.person;song.pins[m.slot]=true;if(song.algorithmAssigned)delete song.algorithmAssigned[m.slot];if(song.reservations)delete song.reservations[m.slot];if(!e!.program.includes(song.id))e!.program.push(song.id);syncReadinessComments(state,e!,a!);break;
+  song.assigned[m.slot]=m.person;song.pins[m.slot]=true;(song.main||={})[m.slot]={person:m.person,by:me.id,application:a!.id};m.standby=false;if(song.algorithmAssigned)delete song.algorithmAssigned[m.slot];if(song.reservations)delete song.reservations[m.slot];syncReadinessComments(state,e!,a!);break;
  }
  case 'vocalStar':{
   if(!song)throw Error('Песня не найдена');const person=admin&&action.person?action.person:me.id;
@@ -460,13 +465,14 @@ export function applyAction(original:State,action:Action,actor:string):State{
   for(const m of members)m.starred=!!action.starred;break;
  }
  case 'withdraw':{const a=e!.applications.find(a=>a.id===action.application);if(!a||(!admin&&a.by!==me.id))throw Error('Нельзя удалить чужую заявку');e!.applications=e!.applications.filter(x=>x.id!==a.id);releaseApplicationParts(e!,a);syncReservations(e!);const target=e!.songs.find(s=>s.id===a.song);if(target?.comments)target.comments=target.comments.filter(c=>c.readiness?.application!==a.id);break;}
- case 'consent':{const a=e!.applications.find(a=>a.id===action.application);const members=a?.members.filter(m=>m.person===(admin?action.person:me.id));if(!members?.length)throw Error('Приглашение не найдено');for(const m of members){m.consent=action.accept?'yes':'no';if(!action.accept)delete m.starred;}if(!action.accept)releaseApplicationParts(e!,{...a!,members});syncReservations(e!);syncReadinessComments(state,e!,a!);break;}
+ case 'consent':{const a=e!.applications.find(a=>a.id===action.application);const members=a?.members.filter(m=>m.person===(admin?action.person:me.id));if(!members?.length)throw Error('Приглашение не найдено');for(const m of members){m.consent=action.accept?'yes':'no';if(!action.accept)delete m.starred;}if(!action.accept){const song=e!.songs.find(s=>s.id===a!.song);if(e!.status==='draft'&&song)for(const m of members)for(const r of offeredSlots(song,m))if(song.main?.[r.id]?.person===m.person){delete song.main[r.id];delete song.assigned[r.id];delete song.pins[r.id];}releaseApplicationParts(e!,{...a!,members});}syncReservations(e!);syncReadinessComments(state,e!,a!);break;}
  case 'assign':{
   if(!song||!song.slots.some(r=>r.id===action.slot))throw Error('Партия не найдена');if(action.person&&!state.people.some(p=>p.id===action.person&&!p.deletedAt&&(!p.demo||e!.demo)))throw Error('Участник не найден');
-  if(action.person){song.assigned[action.slot]=action.person;song.pins[action.slot]=true;}else{delete song.assigned[action.slot];delete song.pins[action.slot];}if(song.reservations)delete song.reservations[action.slot];if(song.algorithmAssigned)delete song.algorithmAssigned[action.slot];if(!e!.program.includes(song.id))e!.program.push(song.id);break;
+  if(song.main?.[action.slot]&&song.main[action.slot].person!==action.person&&action.replace!==true)throw Error('Основной участник закреплён. Подтвердите замену по договорённости');
+  if(action.person){(song.main||={})[action.slot]={person:action.person,by:me.id,manual:true};song.assigned[action.slot]=action.person;song.pins[action.slot]=true;}else{if(song.main)delete song.main[action.slot];delete song.assigned[action.slot];delete song.pins[action.slot];}if(song.reservations)delete song.reservations[action.slot];if(song.algorithmAssigned)delete song.algorithmAssigned[action.slot];break;
  }
- case 'pin':if(song){if(!song.assigned[action.slot])delete song.pins[action.slot];else{song.pins[action.slot]=!song.pins[action.slot];if(song.pins[action.slot]&&song.algorithmAssigned)delete song.algorithmAssigned[action.slot];}}break;
- case 'inclusion':if(song){if(song.shelvedAt)throw Error('Сначала верните песню из долгого ящика');if(!['auto','include','exclude'].includes(action.value))throw Error('Неверное решение');song.inclusion=action.value;if(action.value==='exclude')e!.program=e!.program.filter(id=>id!==song.id);if(action.value!=='exclude'&&!e!.program.includes(song.id))e!.program.push(song.id);}break;
+ case 'pin':if(song?.main?.[action.slot])throw Error('Основное место сохраняется при пересчёте. Для замены согласуйте участие и измените состав');if(song){if(!song.assigned[action.slot])delete song.pins[action.slot];else{if((e!.rulesVersion||0)>=RECORDING_RULES)(song.main||={})[action.slot]={person:song.assigned[action.slot],by:me.id,manual:true};song.pins[action.slot]=!song.pins[action.slot];if(song.pins[action.slot]&&song.algorithmAssigned)delete song.algorithmAssigned[action.slot];}}break;
+ case 'inclusion':if(song){if(song.shelvedAt)throw Error('Сначала верните песню из долгого ящика');if(!['auto','include','exclude'].includes(action.value))throw Error('Неверное решение');song.inclusion=action.value;if(action.value==='exclude')e!.program=e!.program.filter(id=>id!==song.id);if(action.value==='include'){assertSongAllowed(state,e!,song.title,song.artist);if(!e!.program.includes(song.id))e!.program.push(song.id);}}break;
  case 'order':{
   const i=e!.program.indexOf(action.song);
   if('before' in action){
@@ -476,6 +482,8 @@ export function applyAction(original:State,action:Action,actor:string):State{
   }else{const j=i+Number(action.direction);if(i>=0&&j>=0&&j<e!.program.length)[e!.program[i],e!.program[j]]=[e!.program[j],e!.program[i]];}
   break;
  }
+ case 'resetProgram':resetAllocation(e!);e!.program=[];for(const s of e!.songs)if(s.inclusion==='include')s.inclusion='auto';delete e!.programNotes;break;
+ case 'buildProgram':buildProgram(state,e!);break;
  case 'optimize':optimize(state,e!);e!.allocatedAt=new Date().toISOString();break;
  case 'resetAllocation':resetAllocation(e!);break;
  case 'shelveSong':{
@@ -495,16 +503,16 @@ export function applyAction(original:State,action:Action,actor:string):State{
  }
  case 'restoreShelved':{
   if(!song?.shelvedAt||song.shelfReturn)throw Error('Песня не найдена в долгом ящике');const target=state.events.find(ev=>ev.id===action.targetEvent&&!ev.deletedAt&&ev.status==='draft');
-  if(!target)throw Error('Выберите черновик встречи');
+  if(!target)throw Error('Выберите черновик встречи');assertSongAllowed(state,target,song.title,song.artist);
   const entry=song.shelfHistory?.at(-1),origin=songOrigin(e!,song);let restoredSong=song.id;
-  if(target.id===e!.id){delete song.shelvedAt;delete song.shelvedBy;delete song.shelfReason;song.inclusion='auto';target.program.push(song.id);}
-  else{if(target.songs.length>=60)throw Error('Во встрече уже 60 песен');const copy:Song={id:uid(),title:song.title,artist:song.artist,duration:song.duration,slots:structuredClone(song.slots),assigned:{},pins:{},inclusion:'auto',proposedBy:me.id,proposedAt:song.proposedAt,origin:structuredClone(origin)};target.songs.push(copy);target.program.push(copy.id);song.shelfReturn={event:target.id,song:copy.id};restoredSong=copy.id;}
+  if(target.id===e!.id){delete song.shelvedAt;delete song.shelvedBy;delete song.shelfReason;song.inclusion='auto';}
+  else{if(target.songs.length>=60)throw Error('Во встрече уже 60 песен');const copy:Song={id:uid(),title:song.title,artist:song.artist,duration:song.duration,slots:structuredClone(song.slots),assigned:{},pins:{},inclusion:'auto',proposedBy:me.id,proposedAt:song.proposedAt,origin:structuredClone(origin)};target.songs.push(copy);song.shelfReturn={event:target.id,song:copy.id};restoredSong=copy.id;}
   if(entry)entry.returned={at:new Date().toISOString(),event:target.id,song:restoredSong,title:target.title,date:target.date,time:target.time};
   break;
  }
- case 'publish':{if(!canApproveProgram(state,actor))throw Error('Утверждать программу могут только организаторы @nikita и @nastya');if(!e!.program.length)throw Error('Сначала соберите программу');if(warnings(state,e!).length&&action.acknowledgeWarnings!==true)throw Error('Перед утверждением проверьте замечания и подтвердите решение организатора');e!.status='published';e!.publishedAt=new Date().toISOString();break;}
+ case 'publish':{if(!canApproveProgram(state,actor))throw Error('Утверждать программу могут только организаторы @nikita и @nastya');for(const s of e!.songs.filter(s=>e!.program.includes(s.id)))assertSongAllowed(state,e!,s.title,s.artist);if(!e!.program.length)throw Error('Сначала соберите программу');if(warnings(state,e!).length&&action.acknowledgeWarnings!==true)throw Error('Перед утверждением проверьте замечания и подтвердите решение организатора');e!.status='published';e!.publishedAt=new Date().toISOString();break;}
  case 'reopen':{if(e!.status!=='published')throw Error('Утверждение уже отменено');e!.status='draft';delete e!.publishedAt;for(const s of e!.songs)if(s.shelvedAt)s.inclusion='exclude';retainDraftSongs(state);break;}
  default:throw Error('Неизвестное действие');
  }
- state.log.unshift({at:new Date().toISOString(),text:`${me.name}: ${({'comment':'добавлен комментарий','deleteComment':'удалён комментарий','resolve':'уточнена партия по заявке','vocalStar':'обновлены вокальные звёзды','apply':'добавлена заявка','updateApplication':'изменена заявка','song':'добавлена песня','resetAllocation':'сброшено распределение','shelveSong':'песня отправлена в долгий ящик','restoreShelved':'песня возвращена из долгого ящика','setPlayed':'отмечена сыгранная песня','optimize':'пересчитана программа','publish':'опубликована программа','assign':'изменён состав','newEvent':'создана встреча','deleteEvent':'встреча перемещена в корзину','restoreEvent':'встреча восстановлена','reopen':'открыто редактирование','withdraw':'снята заявка','consent':'обновлено подтверждение','pin':'изменено закрепление','inclusion':'изменено решение по песне','profile':'обновлён профиль','person':'добавлен музыкант','purgePerson':'музыкант удалён навсегда','deletePerson':'удалён музыкант','restorePerson':'восстановлен музыкант','purgeEvent':'встреча удалена навсегда','order':'изменён порядок','settings':'изменены настройки','revokeAdmin':'сняты права администратора','admin':'добавлен администратор'} as Record<string,string>)[action.type]||action.type}${e?' · '+e.title:''}`});state.log=state.log.slice(0,80);return state;
+ state.log.unshift({at:new Date().toISOString(),text:`${me.name}: ${({'comment':'добавлен комментарий','deleteComment':'удалён комментарий','resolve':'уточнена партия по заявке','vocalStar':'обновлены вокальные звёзды','apply':'добавлена заявка','updateApplication':'изменена заявка','song':'добавлена песня','resetAllocation':'сброшено распределение','shelveSong':'песня отправлена в долгий ящик','restoreShelved':'песня возвращена из долгого ящика','setPlayed':'отмечена сыгранная песня','resetProgram':'сброшен черновик программы','buildProgram':'собран черновик программы','optimize':'пересчитана программа','publish':'опубликована программа','assign':'изменён состав','newEvent':'создана встреча','deleteEvent':'встреча перемещена в корзину','restoreEvent':'встреча восстановлена','reopen':'открыто редактирование','withdraw':'снята заявка','consent':'обновлено подтверждение','pin':'изменено закрепление','inclusion':'изменено решение по песне','profile':'обновлён профиль','person':'добавлен музыкант','purgePerson':'музыкант удалён навсегда','deletePerson':'удалён музыкант','restorePerson':'восстановлен музыкант','purgeEvent':'встреча удалена навсегда','order':'изменён порядок','settings':'изменены настройки','revokeAdmin':'сняты права администратора','admin':'добавлен администратор'} as Record<string,string>)[action.type]||action.type}${e?' · '+e.title:''}`});state.log=state.log.slice(0,80);return state;
 }

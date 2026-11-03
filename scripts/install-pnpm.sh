@@ -16,6 +16,10 @@ for argument in "$@"; do
   esac
 done
 
+if [[ "$(uname -s)" != Linux ]]; then
+  exec pnpm install --frozen-lockfile --store-dir "${SITES_PROJECT_ROOT}/.sites-runtime/pnpm-store"
+fi
+
 for tool in flock timeout node; do
   command -v "${tool}" >/dev/null || { echo "pnpm setup requires Linux flock, GNU timeout, and Node.js." >&2; exit 69; }
 done
