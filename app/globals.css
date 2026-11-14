@@ -141,3 +141,15 @@ main{max-width:1244px;margin:auto;padding:28px 32px 56px}.community-hero{positio
 .signup-hint{margin-top:12px}
 .signup-comment{margin-top:16px}
 .signup-comment summary{cursor:pointer;font-size:13px}
+
+.signup-part-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,auto);gap:8px;align-items:center}
+.signup-occupant{max-width:140px;font-size:11px;color:var(--muted);text-align:right;overflow-wrap:anywhere}
+.musician-results{list-style:none;padding:0;margin:0 0 10px;border:1px solid var(--line);max-height:168px;overflow:auto}
+.musician-results button,.musician-selected{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;text-align:left;padding:8px 10px;min-height:40px;overflow-wrap:anywhere}
+.musician-results li+li{border-top:1px solid var(--line)}
+.musician-results button:hover,.musician-results button:focus-visible{background:var(--faint)}
+.musician-results small{color:var(--muted)}
+.own-song-record{display:inline-flex;gap:5px;align-items:center;text-align:left;text-decoration:underline;text-underline-offset:3px}
+.cancel-signup-rows{margin-top:18px}
+.cancel-signup-rows>div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
+.auth-modal .google-button{margin:12px 0 20px;text-decoration:none}

@@ -369,7 +369,7 @@ export function applyAction(original:State,action:Action,actor:string):State{
   return applyAction(proposed,{...action,type:'apply',song:song.id,members,comment:undefined},actor);
  }
  const state=structuredClone(original);retainDraftSongs(state);const admin=state.admins.includes(actor);const me=state.people.find(p=>p.auth===actor&&!p.deletedAt);if(!me)throw Error('Профиль не найден');
- const publicActions=['apply','updateApplication','withdraw','consent','profile','song','vocalStar','comment','deleteComment'];if(!admin&&(!publicActions.includes(action.type)||(action.type==='song'&&action.song)))throw Error('Нужны права администратора');
+ const publicActions=['apply','updateApplication','withdraw','cancelSignup','consent','profile','song','vocalStar','comment','deleteComment'];if(!admin&&(!publicActions.includes(action.type)||(action.type==='song'&&action.song)))throw Error('Нужны права администратора');
  const e=state.events.find(e=>e.id===action.event);if(!['newEvent','person','admin','profile','deletePerson','restorePerson','purgePerson','revokeAdmin'].includes(action.type)&&!e)throw Error('Встреча не найдена');
  if(e?.deletedAt&&!['restoreEvent','purgeEvent','profile','deletePerson','restorePerson','purgePerson','revokeAdmin','restoreShelved'].includes(action.type))throw Error('Встреча удалена. Сначала восстановите её');
  if(e?.status==='published'&&!['reopen','profile','consent','deleteEvent','restoreEvent','purgeEvent','settings','deletePerson','restorePerson','purgePerson','revokeAdmin','comment','deleteComment','shelveSong','setPlayed','restoreShelved'].includes(action.type))throw Error('Программа опубликована. Администратор должен открыть редактирование');
@@ -487,6 +487,32 @@ export function applyAction(original:State,action:Action,actor:string):State{
   for(const m of members)m.starred=!!action.starred;break;
  }
  case 'withdraw':{const a=e!.applications.find(a=>a.id===action.application);if(!a||(!admin&&a.by!==me.id))throw Error('Нельзя удалить чужую заявку');e!.applications=e!.applications.filter(x=>x.id!==a.id);releaseApplicationParts(e!,a);syncReservations(e!);const target=e!.songs.find(s=>s.id===a.song);if(target?.comments)target.comments=target.comments.filter(c=>c.readiness?.application!==a.id);break;}
+ case 'cancelSignup':{
+  const application=e!.applications.find(a=>a.id===action.application&&a.song===song?.id);
+  const member=application?.members.find(m=>m.person===me.id&&m.slot===action.slot&&m.consent!=='no');
+  if(!song||song.shelvedAt||!application||!member)throw Error('Ваша запись на эту партию не найдена');
+  if(application.by===me.id&&application.members.length===1){
+   e!.applications=e!.applications.filter(a=>a.id!==application.id);
+   if(song.comments)song.comments=song.comments.filter(c=>c.readiness?.application!==application.id);
+  }else{
+   member.consent='no';
+   delete member.starred;
+   syncReadinessComments(state,e!,application);
+  }
+  if(!isFlexible(member)&&song.main?.[member.slot]?.person===me.id&&song.main[member.slot].manual){
+   delete song.main[member.slot];delete song.pins[member.slot];delete song.assigned[member.slot];
+  }
+  releaseApplicationParts(e!,{...application,members:[member]});
+  for(const part of offeredSlots(song,member)){
+   const slot=part.id;
+   if(song.algorithmAssigned?.[slot]===me.id&&!assignmentCandidates(e!,song,slot).some(candidate=>candidate.person===me.id)){
+    delete song.algorithmAssigned[slot];
+    if(song.assigned[slot]===me.id&&!song.main?.[slot])delete song.assigned[slot];
+   }
+  }
+  syncReservations(e!);
+  break;
+ }
  case 'consent':{const a=e!.applications.find(a=>a.id===action.application);const members=a?.members.filter(m=>m.person===(admin?action.person:me.id));if(!members?.length)throw Error('Приглашение не найдено');const targetSong=e!.songs.find(s=>s.id===a!.song);if(action.accept&&e!.status==='draft'&&targetSong)for(const m of members)if(m.consent==='no')assertPartAvailable(e!,targetSong,m,a!.id);for(const m of members){m.consent=action.accept?'yes':'no';if(!action.accept)delete m.starred;}if(!action.accept){const song=e!.songs.find(s=>s.id===a!.song);if(e!.status==='draft'&&song)for(const m of members)for(const r of offeredSlots(song,m))if(song.main?.[r.id]?.person===m.person){delete song.main[r.id];delete song.assigned[r.id];delete song.pins[r.id];}releaseApplicationParts(e!,{...a!,members});}syncReservations(e!);syncReadinessComments(state,e!,a!);break;}
  case 'assign':{
   if(!song||!song.slots.some(r=>r.id===action.slot))throw Error('Партия не найдена');if(action.person&&!state.people.some(p=>p.id===action.person&&!p.deletedAt&&(!p.demo||e!.demo)))throw Error('Участник не найден');
@@ -537,5 +563,5 @@ export function applyAction(original:State,action:Action,actor:string):State{
  case 'reopen':{if(e!.status!=='published')throw Error('Утверждение уже отменено');e!.status='draft';delete e!.publishedAt;for(const s of e!.songs)if(s.shelvedAt)s.inclusion='exclude';retainDraftSongs(state);break;}
  default:throw Error('Неизвестное действие');
  }
- state.log.unshift({at:new Date().toISOString(),text:`${me.name}: ${({'comment':'добавлен комментарий','deleteComment':'удалён комментарий','resolve':'уточнена партия по заявке','vocalStar':'обновлены вокальные звёзды','apply':'добавлена заявка','updateApplication':'изменена заявка','song':'добавлена песня','resetAllocation':'сброшено распределение','shelveSong':'песня отправлена в долгий ящик','restoreShelved':'песня возвращена из долгого ящика','setPlayed':'отмечена сыгранная песня','clearProgram':'очищен список песен программы','resetProgram':'сброшено распределение партий','buildProgram':'собран черновик программы','optimize':'пересчитана программа','publish':'опубликована программа','assign':'изменён состав','newEvent':'создана встреча','deleteEvent':'встреча перемещена в корзину','restoreEvent':'встреча восстановлена','reopen':'открыто редактирование','withdraw':'снята заявка','consent':'обновлено подтверждение','pin':'изменено закрепление','inclusion':'изменено решение по песне','profile':'обновлён профиль','person':'добавлен музыкант','purgePerson':'музыкант удалён навсегда','deletePerson':'удалён музыкант','restorePerson':'восстановлен музыкант','purgeEvent':'встреча удалена навсегда','order':'изменён порядок','settings':'изменены настройки','revokeAdmin':'сняты права администратора','admin':'добавлен администратор'} as Record<string,string>)[action.type]||action.type}${e?' · '+e.title:''}`});state.log=state.log.slice(0,80);return state;
+ state.log.unshift({at:new Date().toISOString(),text:`${me.name}: ${({'comment':'добавлен комментарий','deleteComment':'удалён комментарий','resolve':'уточнена партия по заявке','vocalStar':'обновлены вокальные звёзды','apply':'добавлена заявка','updateApplication':'изменена заявка','cancelSignup':'отменена запись на партию','song':'добавлена песня','resetAllocation':'сброшено распределение','shelveSong':'песня отправлена в долгий ящик','restoreShelved':'песня возвращена из долгого ящика','setPlayed':'отмечена сыгранная песня','clearProgram':'очищен список песен программы','resetProgram':'сброшено распределение партий','buildProgram':'собран черновик программы','optimize':'пересчитана программа','publish':'опубликована программа','assign':'изменён состав','newEvent':'создана встреча','deleteEvent':'встреча перемещена в корзину','restoreEvent':'встреча восстановлена','reopen':'открыто редактирование','withdraw':'снята заявка','consent':'обновлено подтверждение','pin':'изменено закрепление','inclusion':'изменено решение по песне','profile':'обновлён профиль','person':'добавлен музыкант','purgePerson':'музыкант удалён навсегда','deletePerson':'удалён музыкант','restorePerson':'восстановлен музыкант','purgeEvent':'встреча удалена навсегда','order':'изменён порядок','settings':'изменены настройки','revokeAdmin':'сняты права администратора','admin':'добавлен администратор'} as Record<string,string>)[action.type]||action.type}${e?' · '+e.title:''}`});state.log=state.log.slice(0,80);return state;
 }

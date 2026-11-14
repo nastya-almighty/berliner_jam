@@ -69,3 +69,25 @@ test('a musician can decline a main part assigned manually by an admin',()=>{let
 
 test('clear program removes selection while preserving full lineups, sources and applications',()=>{let s=state([song('one',['g','d']),song('excluded')]);s=record(s,'one','a');s=record(s,'one','b','__any');s=record(s,'excluded','c');buildProgram(s,s.events[0]);s=applyAction(s,{type:'inclusion',event:'now',song:'one',value:'include'},actor);s=applyAction(s,{type:'inclusion',event:'now',song:'excluded',value:'exclude'},actor);const before=structuredClone(s.events[0]);s=applyAction(s,{type:'clearProgram',event:'now'},actor);const e=s.events[0];assert.deepEqual(e.program,[]);assert.deepEqual(e.applications,before.applications);assert.deepEqual(e.songs.map(x=>x.assigned),before.songs.map(x=>x.assigned));assert.deepEqual(e.songs.map(x=>x.main),before.songs.map(x=>x.main));assert.deepEqual(e.songs.map(x=>x.algorithmAssigned),before.songs.map(x=>x.algorithmAssigned));assert.equal(e.songs[0].inclusion,'auto');assert.equal(e.songs[1].inclusion,'exclude');assert.equal(e.programNotes,undefined);});
 test('both reset actions preserve song order and flags; clear program is admin-only and draft-only',()=>{let s=state([song('one'),song('two')]);s=record(s,'one','a');s=record(s,'two','b');buildProgram(s,s.events[0]);s.events[0].program.reverse();const order=[...s.events[0].program];s=applyAction(s,{type:'resetProgram',event:'now'},actor);assert.deepEqual(s.events[0].program,order);s=applyAction(s,{type:'resetAllocation',event:'now'},actor);assert.deepEqual(s.events[0].program,order);assert.throws(()=>applyAction(s,{type:'clearProgram',event:'now'},'a'),/администратора/);s.events[0].status='published';assert.throws(()=>applyAction(s,{type:'clearProgram',event:'now'},actor),/опубликована/);});
+
+test('a musician can cancel their own part from an application submitted by someone else',()=>{
+ let s=state([song('s',['g','d'])]);
+ s=applyAction(s,{type:'apply',event:'now',song:'s',priority:2,members:[{person:'a',slot:'g'},{person:'b',slot:'d'}]},'a');
+ const application=s.events[0].applications[0].id;
+ const cancel={type:'cancelSignup',event:'now',song:'s',application,slot:'d'};
+ assert.throws(()=>applyAction(s,{...cancel,person:'b'},'a'),/Ваша запись/);
+ s=applyAction(s,cancel,'b');
+ assert.deepEqual(s.events[0].songs[0].assigned,{g:'a'});
+ assert.deepEqual(s.events[0].applications[0].members.map(m=>m.consent),['yes','no']);
+ assert.throws(()=>applyAction(s,cancel,'b'),/Ваша запись/);
+});
+
+test('cancelling a flexible signup frees its draft assignment',()=>{
+ const cancel={type:'cancelSignup',event:'now',song:'s',slot:'__any'};
+ let s=record(state(),'s','a','__any');
+ buildProgram(s,s.events[0]);
+ assert.equal(s.events[0].songs[0].assigned.g,'a');
+ s=applyAction(s,{...cancel,application:s.events[0].applications[0].id},'a');
+ assert.deepEqual(s.events[0].songs[0].assigned,{});
+ assert.deepEqual(s.events[0].applications,[]);
+});

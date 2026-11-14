@@ -1,9 +1,18 @@
+import { clearGoogleSignup, completeGoogleSignup } from '../../../lib/google-auth';
 import { changePassword, forgotPassword, mailAvailable, requestEmailVerification, rotateRecovery, validateEmail, verifyEmail } from '../../../lib/account-security';
 import { normalizeNickname } from '../../../lib/model';
 import { authHeaders, assertOrigin, cookie, createAccount, db, digest, makeSession, passwordHash, randomToken, rateLimit, readState, session, migrateOrganizerLogin } from '../../../lib/local-auth';
 export const dynamic='force-dynamic';
 export async function POST(request:Request){try{
  assertOrigin(request);const raw=await request.text();if(raw.length>6000)throw Error('Слишком большой запрос');const body=JSON.parse(raw);let token:string|null=null,recoveryToken:string|null=null,message:string|undefined;
+ if(body.mode==='google-signup'){
+  await rateLimit(request,'google-signup',40);
+  const result=await completeGoogleSignup(request,body.name);
+  const headers=new Headers(authHeaders);
+  headers.append('Set-Cookie',cookie(request,result.token));
+  headers.append('Set-Cookie',clearGoogleSignup(request));
+  return Response.json({ok:true},{headers});
+ }
  if(body.mode==='join'||body.mode==='setup'||body.mode==='invite'){await rateLimit(request,body.mode,body.mode==='join'?200:20);if(body.email){validateEmail(body.email);if(!mailAvailable())throw Error('Отправка писем пока не подключена');}const r=await createAccount(request,body);token=r.token;recoveryToken=r.recoveryToken;if(body.email){try{await requestEmailVerification(request,{id:r.accountId,tokenHash:await digest(token),recoveryUntil:0},body.email,body.password);}catch{message='Аккаунт создан. Письмо не отправлено — повторите подтверждение почты в настройках входа.';}}}
  else if(body.mode==='login'){
   await rateLimit(request,'login',20);await migrateOrganizerLogin();const login=typeof body.login==='string'?normalizeNickname(body.login):'';const row=await db().prepare('SELECT id,password_hash,salt FROM jam_accounts WHERE login = ?').bind(login).first<{id:string;password_hash:string;salt:string}>();const password=typeof body.password==='string'&&body.password.length<=200?body.password:'';

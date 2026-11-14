@@ -1,3 +1,4 @@
+import { googleAvailable } from '../../../lib/google-auth';
 import { mailAvailable, privateAccount } from '../../../lib/account-security';
 import { cleanupEventImages, requireUploadedImage } from '../../../lib/event-images';
 import { applyAction, retainDraftSongs, visibleState, State } from '../../../lib/model';
@@ -10,7 +11,7 @@ export async function GET(request:Request){try{
   if(result.meta.changes)row={data:JSON.stringify(state),revision:row.revision+1};else{row=await readState();state=JSON.parse(row.data);}
  }
  const person=current?state.people.find(p=>p.auth===current.id):null;
- return Response.json({state:visibleState(state,!!current&&state.admins.includes(current.id),person?.id),revision:row.revision,identity:person&&current?{id:current.id,name:person.name}:null,setupAvailable:await setupAvailable(),mailAvailable:mailAvailable(),account:await privateAccount(current)},{headers:authHeaders});
+ return Response.json({state:visibleState(state,!!current&&state.admins.includes(current.id),person?.id),revision:row.revision,identity:person&&current?{id:current.id,name:person.name}:null,setupAvailable:await setupAvailable(),mailAvailable:mailAvailable(),googleAvailable:googleAvailable(request),account:await privateAccount(current)},{headers:authHeaders});
  }catch(error){return Response.json({error:(error as Error).message},{status:500,headers:authHeaders});}}
 export async function POST(request:Request){try{
  assertOrigin(request);const current=await session(request);if(!current)return Response.json({error:'Войдите в свой аккаунт'},{status:401,headers:authHeaders});

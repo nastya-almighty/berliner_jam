@@ -57,16 +57,16 @@ async function invitationClaim(value:unknown){
 export async function administrator(request:Request){const current=await session(request);if(!current)throw Error('Нужны права администратора');const row=await readState();const state:State=JSON.parse(row.data);if(!state.admins.includes(current.id))throw Error('Нужны права администратора');return {current,row,state};}
 export async function makeSession(accountId:string,recovery=false){const state:State=JSON.parse((await readState()).data);if(!state.people.some(p=>p.auth===accountId&&!p.deletedAt))throw Error('Профиль удалён организатором');const token=randomToken();await db().prepare('INSERT INTO jam_sessions (token_hash,account_id,expires_at,recovery_until) VALUES (?,?,?,?)').bind(await digest(token),accountId,Date.now()+SESSION_SECONDS*1000,recovery?Date.now()+600000:null).run();return token;}
 export function assertOrigin(request:Request){const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)throw Error('Недопустимый источник запроса');}
-function nameField(value:unknown){if(typeof value!=='string'||!value.trim()||value.length>80)throw Error('Укажите имя, не длиннее 80 символов');return value.trim();}
+function nameField(value:unknown){if(typeof value!=='string'||!value.trim()||value.length>80)throw Error('Укажите имя на сайте, не длиннее 80 символов');return value.trim();}
 export async function rateLimit(request:Request,kind:string,limit:number){const ip=request.headers.get('cf-connecting-ip')||'local';const key=await digest(kind+'|'+ip);const window=Math.floor(Date.now()/600000);await db().prepare('INSERT INTO jam_auth_attempts (key,window,count) VALUES (?,?,1) ON CONFLICT(key) DO UPDATE SET count = CASE WHEN window = excluded.window THEN count + 1 ELSE 1 END, window = excluded.window').bind(key,window).run();const count=await db().prepare('SELECT count FROM jam_auth_attempts WHERE key = ?').bind(key).first<{count:number}>();if((count?.count||0)>limit)throw Error('Слишком много попыток. Повторите через 10 минут');}
-export async function createAccount(request:Request,body:any){
+export async function createAccount(request:Request,body:any,googleClaim?:string){
  const setup=body.mode==='setup',invite=body.mode==='invite',admin=setup||invite;const name=nameField(body.name);
- let claimKey:string|null=null;
+ let claimKey:string|null=googleClaim||null;
  if(setup){if(!await setupAvailable())throw Error('Администратор уже настроен');if(typeof body.setupToken!=='string'||await digest(body.setupToken)!==await digest(env.ADMIN_SETUP_TOKEN!))throw Error('Ссылка настройки недействительна');claimKey='admin-setup';}
  if(invite)claimKey=(await invitationClaim(body.inviteToken)).claimKey;
- validatePassword(body.password);
- const id='local_'+uid(),recovery=admin?null:randomToken(),salt=randomToken();
- const pass=await passwordHash(body.password,salt);const token=randomToken(),tokenHash=await digest(token);const accessHash=recovery?await digest(recovery):null;
+ if(!googleClaim)validatePassword(body.password);
+ const id='local_'+uid(),recovery=admin||googleClaim?null:randomToken(),salt=googleClaim?null:randomToken();
+ const pass=salt?await passwordHash(body.password,salt):null;const token=randomToken(),tokenHash=await digest(token);const accessHash=recovery?await digest(recovery):null;
  for(let attempt=0;attempt<3;attempt++){
   const row=await readState();const state:State=JSON.parse(row.data);ensureNicknames(state);
   if(body.nicknameMode!==undefined&&!['suggested','custom'].includes(body.nicknameMode))throw Error('Выберите предложенный ник или впишите свой');
