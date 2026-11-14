@@ -26,7 +26,7 @@ test('demo musicians cannot be assigned to a real event',()=>{const state=allSon
 function participantState(){const s=allSongsDemo('owner');s.people.push({id:'u',auth:'u',name:'Скрипач',roles:[],max:5});return s;}
 test('participant creates an optional violin part and their application atomically',()=>{const s=participantState();const n=applyAction(s,{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:'Скрипка'}]},'u');const e=n.events[0],song=e.songs[0],r=song.slots.find(r=>r.label==='Скрипка');assert.equal(r.required,false);assert.equal(e.applications.at(-1).members[0].slot,r.id);assert.equal(e.applications.at(-1).members[0].consent,'yes');assert.equal(s.events[0].songs[0].slots.length,6);assert.equal(complete(song),true);optimize(n,e);assert.equal(e.songs[0].assigned[r.id],'u');assert.ok(!warnings(n,e).some(w=>w.song===song.id));});
 test('custom instruments work for accordion, balalaika and flute',()=>{for(const label of ['Аккордеон','Балалайка','Флейта']){const n=applyAction(participantState(),{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:label}]},'u');assert.ok(n.events[0].songs[0].slots.some(r=>r.label===label&&!r.required));}});
-test('instrument labels differing only in case and whitespace reuse one part',()=>{let s=participantState();s=applyAction(s,{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:'  Губная   гармошка '}]},'u');const n=applyAction(s,{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:'губная гармошка'}]},'u');assert.equal(n.events[0].songs[0].slots.length,7);const apps=n.events[0].applications.slice(-2);assert.equal(apps[0].members[0].slot,apps[1].members[0].slot);});
+test('instrument labels differing only in case and whitespace reuse one part',()=>{let s=participantState();s=applyAction(s,{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:'  Губная   гармошка '}]},'u');const duplicate={type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:'губная гармошка'}]};assert.throws(()=>applyAction(s,duplicate,'u'),/уже записан/);const n=applyAction(s,{...duplicate,members:[{...duplicate.members[0],person:'owner'}]},'owner');assert.equal(n.events[0].songs[0].slots.length,7);const apps=n.events[0].applications.slice(-2);assert.equal(apps[0].members[0].slot,apps[1].members[0].slot);});
 test('existing mandatory part cannot be downgraded via custom instrument entry',()=>{const n=applyAction(participantState(),{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument:'бас'}]},'u');assert.equal(n.events[0].songs[0].slots.length,6);assert.ok(n.events[0].songs[0].slots.find(r=>r.id==='r2').required);});
 test('joint application can add new instruments while preserving consent requirements',()=>{const s=participantState();s.people.push({id:'friend',auth:'friend',name:'Флейтист',roles:[],max:5});const n=applyAction(s,{type:'apply',event:'demo-event',song:'s1',priority:2,together:'hard',members:[{person:'u',slot:'__custom',instrument:'Скрипка'},{person:'friend',slot:'__custom',instrument:'Флейта'}]},'u');assert.equal(n.events[0].songs[0].slots.length,8);assert.deepEqual(n.events[0].applications.at(-1).members.map(m=>m.consent),['yes','yes']);});
 test('invalid custom request leaves original song unchanged',()=>{const s=participantState();for(const instrument of ['', 'x'.repeat(61)])assert.throws(()=>applyAction(s,{type:'apply',event:'demo-event',song:'s1',priority:2,members:[{person:'u',slot:'__custom',instrument}]},'u'));assert.equal(s.events[0].songs[0].slots.length,6);});
@@ -116,7 +116,7 @@ test('application star checkbox updates the own song preference across vocal app
  s=apply(s,'s','v',2,true);s=apply(s,'s','duet',2,false);
  assert.equal(starredSongs(s.events[0],'a').size,0);
  assert.ok(s.events[0].applications.every(a=>a.members.every(m=>!m.starred)));
- s=apply(s,'s','duet',2,true);
+ const a=s.events[0].applications.at(-1);s=applyAction(s,{type:'updateApplication',event:s.events[0].id,application:a.id,priority:2,members:[{person:'a',slot:'duet',starred:true}]},'a');
  assert.equal(starredSongs(s.events[0],'a').size,1);
  assert.ok(s.events[0].applications.every(a=>a.members.every(m=>m.starred)));
 });
@@ -449,7 +449,7 @@ test('editing an invitation retains unchanged consent and re-requests a changed 
 test('editing keeps pins and bookings supported by another application',()=>{
  let s=bookingFixture();s.events[0].songs[0].slots.push(slot('d','Барабаны'),slot('b','Бас'));
  s=applyAction(s,booking([{person:'writer',slot:'g'},{person:'writer',slot:'d'}]),'writer');const id=s.events[0].applications[0].id;
- s=applyAction(s,booking([{person:'writer',slot:'d'}]),'writer');s=applyAction(s,{type:'assign',replace:true,event:'e',song:'s',slot:'g',person:'writer'},'admin');
+ s.events[0].applications.push(request('old-duplicate','s',[['writer','d']]));s=applyAction(s,{type:'assign',replace:true,event:'e',song:'s',slot:'g',person:'writer'},'admin');
  s=editRequest(s,id,[{person:'writer',slot:'b'}]);assert.deepEqual(s.events[0].songs[0].assigned,{g:'writer',d:'writer',b:'writer'});assert.equal(s.events[0].songs[0].pins.g,true);
 });
 test('editing cannot alter another author application, transfer songs or overwrite stale edits',()=>{
@@ -494,7 +494,7 @@ test('rejected and resolved flexible offers remove only their own automatic comm
  s=applyAction(s,{type:'resolve',event:'e',song:'s',application:own,member:0,slot:'g'},'admin');assert.equal(s.events[0].songs[0].comments.length,0);assert.equal(s.events[0].songs[0].assigned.g,'writer');
 });
 test('ready people are unique across multiple recorded offers',()=>{
- let s=bookingFixture();s=applyAction(s,booking([{person:'writer',slot:'__any'}]),'writer');s=applyAction(s,booking([{person:'writer',slot:'__any'}]),'writer');s=applyAction(s,booking([{person:'target',slot:'__any'}]),'writer');
+ let s=bookingFixture();s=applyAction(s,booking([{person:'writer',slot:'__any'}]),'writer');s.events[0].applications.push(request('old-duplicate','s',[['writer','__any']]));s=applyAction(s,booking([{person:'target',slot:'__any'}]),'writer');
  assert.deepEqual(readinessPeople(s.events[0],s.events[0].songs[0],'g'),['writer','target']);s=applyAction(s,{type:'consent',event:'e',application:s.events[0].applications.at(-1).id,accept:true},'target');assert.deepEqual(readinessPeople(s.events[0],s.events[0].songs[0],'g'),['writer','target']);assert.equal(readiness(s.events[0],s.events[0].songs[0],'g'),2);
 });
 

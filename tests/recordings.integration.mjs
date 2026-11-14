@@ -23,7 +23,12 @@ try{
  let user=await get('friend');assert.equal(user.state.events[0].songs[0].main.g.person,'friend');assert.equal(user.state.events[0].songs[0].main.g.by,'author');assert.deepEqual(user.state.events[0].program,[]);
  await post('reserve',{type:'apply',song:'song',priority:1,members:[{person:'reserve',slot:'g'}]});
  let admin=await get(owner);assert.equal(admin.state.events[0].songs[0].assigned.g,'friend');assert.equal(admin.state.events[0].applications.at(-1).members[0].standby,true);
- await post('reserve',{type:'apply',song:'song',priority:2,members:[{person:'reserve',slot:'__choice',alternatives:['g','d']}]});
+ const duplicate=await post('reserve',{type:'apply',song:'song',priority:2,members:[{person:'reserve',slot:'g'}]},400);
+ assert.match(duplicate.error,/уже записан/);
+ const overlapping=await post('author',{type:'apply',song:'song',priority:2,members:[{person:'reserve',slot:'__choice',alternatives:['g','d']}]},400);
+ assert.match(overlapping.error,/уже записан/);
+ assert.equal((await get(owner)).state.events[0].applications.length,2);
+ await post('reserve',{type:'updateApplication',application:admin.state.events[0].applications.at(-1).id,song:'song',priority:2,members:[{person:'reserve',slot:'__choice',alternatives:['g','d']}]});
  await post('author',{type:'buildProgram'},400);admin=await post(owner,{type:'buildProgram'});assert.deepEqual(admin.state.events[0].program,['song']);assert.equal(admin.state.events[0].songs[0].assigned.d,'reserve');assert.ok(admin.state.events[0].programNotes.song);
  user=await get('friend');assert.equal(user.state.events[0].programNotes,undefined);assert.equal(user.state.events[0].songs[0].assigned.d,undefined);
  await post(owner,{type:'assign',song:'song',slot:'g',person:'reserve'},400);

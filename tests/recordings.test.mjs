@@ -20,7 +20,30 @@ test('one flexible offer cannot occupy two required parts',()=>{let s=record(sta
 test('decline frees the main without automatically promoting a reserve',()=>{let s=record(state(),'s','a');s=record(s,'s','b');s=applyAction(s,{type:'consent',event:'now',application:s.events[0].applications[0].id,accept:false},'a');assert.deepEqual(mainAssignments(s.events[0],s.events[0].songs[0]),{});assert.equal(s.events[0].applications[1].members[0].standby,true);});
 test('admin replacement needs explicit acknowledgement of the agreement',()=>{let s=record(state(),'s','a');assert.throws(()=>applyAction(s,{type:'assign',event:'now',song:'s',slot:'g',person:'b'},actor),/договорённости/);s=applyAction(s,{type:'assign',event:'now',song:'s',slot:'g',person:'b',replace:true},actor);assert.equal(s.events[0].songs[0].main.g.person,'b');});
 test('migration preserves published events and chooses the oldest concrete application',()=>{let s=state();s.events[0].rulesVersion=5;s.events[0].applications=[{id:'later',song:'s',by:'b',createdAt:'2026-02-02',priority:1,together:'soft',members:[{person:'b',slot:'g',consent:'yes'}]},{id:'first',song:'s',by:'a',createdAt:'2026-02-01',priority:2,together:'soft',members:[{person:'a',slot:'g',consent:'pending'}]}];past(s,'old','2026-01-01',[performed('old','b')]);const before=JSON.stringify(s.events[1]);assert.equal(retainDraftSongs(s),true);assert.equal(s.events[0].songs[0].main.g.person,'a');assert.equal(JSON.stringify(s.events[1]),before);assert.equal(retainDraftSongs(s),false);});
-test('withdrawing one duplicate supporting application retains the main',()=>{let s=record(state(),'s','a');const id=s.events[0].applications[0].id;s=record(s,'s','a');s=applyAction(s,{type:'withdraw',event:'now',application:id},'a');assert.equal(mainAssignments(s.events[0],s.events[0].songs[0]).g,'a');});
+test('withdrawing one duplicate supporting application retains the main',()=>{let s=record(state(),'s','a');const id=s.events[0].applications[0].id;s.events[0].applications.push({...structuredClone(s.events[0].applications[0]),id:'old-duplicate'});s=applyAction(s,{type:'withdraw',event:'now',application:id},'a');assert.equal(mainAssignments(s.events[0],s.events[0].songs[0]).g,'a');});
+test('duplicate parts are rejected across authors and flexible offers, including edits',()=>{
+ let s=record(state([song('s',['g','d','v'])]),'s','a');
+ for(const [part,extra] of [['g',{}],['__any',{}],['__choice',{alternatives:['g','d']}]])
+  assert.throws(()=>record(s,'s','a',part,'b',extra),/уже записан/);
+ s=record(s,'s','b','g');
+ s=record(s,'s','a','__choice','a',{alternatives:['d','v']});
+ const event=s.events[0],app=event.applications[2],before=structuredClone(s);
+ const edit=(alternatives)=>applyAction(s,{type:'updateApplication',event:'now',application:app.id,priority:1,members:[{person:'a',slot:'__choice',alternatives}]},'a');
+ assert.throws(()=>edit(['g','d']),/уже записан/);
+ assert.deepEqual(s,before);
+ assert.equal(edit(['d','v']).events[0].applications[2].priority,1);
+ assert.equal(event.songs[0].main.g.person,'a');
+});
+test('a declined part is open to a new signup; repeating by name uses the same musician',()=>{
+ let s=record(state(),'s','__name','g',actor,{name:'  Offline   Friend '});
+ assert.throws(()=>record(s,'s','__name','g',actor,{name:'offline friend'}),/уже записан/);
+ const app=s.events[0].applications[0],person=app.members[0].person;
+ s=applyAction(s,{type:'consent',event:'now',application:app.id,person,accept:false},actor);
+ s=record(s,'s','__name','g',actor,{name:'offline friend'});
+ assert.equal(s.events[0].applications[1].members[0].person,person);
+ assert.equal(s.events[0].songs[0].main.g.application,s.events[0].applications[1].id);
+ assert.throws(()=>applyAction(s,{type:'consent',event:'now',application:app.id,person,accept:true},actor),/уже записан/);
+});
 test('program selects distinct people instead of several songs by the same lineup',()=>{let s=state([song('one'),song('two'),song('three')]);s.events[0].budget=14;s=record(s,'one','a');s=record(s,'two','a');s=record(s,'three','b');buildProgram(s,s.events[0]);assert.equal(s.events[0].program.length,2);assert.ok(s.events[0].program.includes('three'));assert.ok(duration(s.events[0])<=14);});
 test('ready songs precede almost-ready songs even when the latter cover more people',()=>{let s=state([song('ready'),song('almost',['v','g','d'])]);s.events[0].budget=7;s=record(s,'ready','a');s=record(s,'almost','b','v');s=record(s,'almost','c','g');buildProgram(s,s.events[0]);assert.deepEqual(s.events[0].program,['ready']);const advice=programAdvice(s,s.events[0]).find(x=>x.song.id==='almost');assert.equal(advice.added,2);assert.equal(advice.over,7);assert.equal(advice.missing.length,1);assert.equal(advice.replace,undefined);});
 test('almost-ready songs enter when time remains; emptier proposals stay outside',()=>{let s=state([song('ready'),song('almost',['g','d']),song('empty',['v','g','d'])]);s.events[0].budget=14;s=record(s,'ready','a');s=record(s,'almost','b');buildProgram(s,s.events[0]);assert.deepEqual(new Set(s.events[0].program),new Set(['ready','almost']));assert.ok(s.events[0].programNotes.almost.includes('Почти'));});

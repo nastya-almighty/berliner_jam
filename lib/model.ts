@@ -122,6 +122,27 @@ export function applicants(e:JamEvent,song:string,slot:string) {
 }
 export function isFlexible(m:Pick<ApplicationMember,'slot'>){return m.slot==='__any'||m.slot==='__choice';}
 export function offeredSlots(s:Song,m:Pick<ApplicationMember,'slot'|'alternatives'>){return s.slots.filter(r=>m.slot==='__any'||(m.slot==='__choice'?(m.alternatives||[]).includes(r.id):r.id===m.slot));}
+export function requestedParts(event:JamEvent,song:Song,person:string,except?:string){
+ const parts=new Set<string>();
+ for(const application of event.applications){
+  if(application.song!==song.id||application.id===except)continue;
+  for(const member of application.members){
+   if(member.person!==person||member.consent==='no')continue;
+   for(const part of offeredSlots(song,member))parts.add(part.id);
+  }
+ }
+ return parts;
+}
+export function namedMusician(people:Person[],by:string,name:string){
+ const key=(value:string)=>value.trim().replace(/\s+/g,' ').normalize('NFKC').toLocaleLowerCase('ru-RU');
+ const normalized=key(name);
+ return people.find(p=>!p.deletedAt&&p.unlinkedBy===by&&!p.auth&&key(p.name)===normalized);
+}
+function assertPartAvailable(event:JamEvent,song:Song,member:ApplicationMember,except?:string){
+ const requested=requestedParts(event,song,member.person,except);
+ const duplicate=offeredSlots(song,member).find(part=>requested.has(part.id));
+ if(duplicate)throw Error(`Этот музыкант уже записан на партию «${duplicate.label}». Измените существующую заявку или выберите другие партии.`);
+}
 export function memberPart(s:Song,m:Pick<ApplicationMember,'slot'|'alternatives'>){return m.slot==='__any'?'Любая партия':m.slot==='__choice'?'Одна из: '+offeredSlots(s,m).map(r=>r.label).join(' / '):s.slots.find(r=>r.id===m.slot)?.label||'Партия удалена';}
 export function flexibleApplicants(e:JamEvent,s:Song,slot?:string){return e.applications.flatMap(a=>a.song===s.id&&(a.together!=='hard'||a.members.every(m=>(e.rulesVersion||0)>=RECORDING_RULES?m.consent!=='no':m.consent==='yes'))?a.members.filter(m=>isFlexible(m)&&((e.rulesVersion||0)>=RECORDING_RULES?m.consent!=='no':m.consent==='yes')&&(!slot||offeredSlots(s,m).some(r=>r.id===slot))).map(m=>({...m,application:a})):[]);}
 export function readinessPeople(e:JamEvent,s:Song,slot:string){return [...new Set([...applicants(e,s.id,slot),...flexibleApplicants(e,s,slot)].map(m=>m.person))];}
@@ -408,8 +429,8 @@ export function applyAction(original:State,action:Action,actor:string):State{
   const members:Application['members']=action.members.map((m:any)=>{
    let p:Person|undefined;
    if(m.person==='__name'){
-    const name=text(m.name,1,80).replace(/\s+/g,' '),key=name.normalize('NFKC').toLocaleLowerCase('ru-RU');
-    p=state.people.find(p=>!p.deletedAt&&p.unlinkedBy===me.id&&!p.auth&&p.name.normalize('NFKC').toLocaleLowerCase('ru-RU')===key);
+    const name=text(m.name,1,80).replace(/\s+/g,' ');
+    p=namedMusician(state.people,me.id,name);
     if(!p){p={id:uid(),name,roles:[],max:5,unlinkedBy:me.id};state.people.push(p);}
    }else p=state.people.find(p=>p.id===m.person);
    if(!p||p.deletedAt||(p.demo&&!e!.demo))throw Error('Проверьте участников и партии');
@@ -437,6 +458,7 @@ export function applyAction(original:State,action:Action,actor:string):State{
   });
   const fixed=members.filter(m=>!isFlexible(m));if(new Set(fixed.map(m=>m.slot)).size!==fixed.length)throw Error('На каждую партию укажите одного участника');
   if(members.some(m=>isFlexible(m)&&members.filter(x=>x.person===m.person).length>1))throw Error('Для выбора одной из партий укажите участника один раз');
+  for(const member of members)assertPartAvailable(e!,song,member,previousApplication?.id);
   const priority=number(action.priority,1,3);if(![1,2,3].includes(priority))throw Error('Выберите приоритет');
   for(const m of members.filter(m=>m.starred)){const songs=starredSongs(e!,m.person);if(!songs.has(song.id)&&songs.size>=VOCAL_STARS)throw Error('Для вокала можно выбрать до 3 песен со звездой на встречу');}
   if(editing){const previous=structuredClone(previousApplication!);Object.assign(previousApplication!,{priority,together:action.together==='hard'?'hard':'soft',members});releaseApplicationParts(e!,previous);}
@@ -465,7 +487,7 @@ export function applyAction(original:State,action:Action,actor:string):State{
   for(const m of members)m.starred=!!action.starred;break;
  }
  case 'withdraw':{const a=e!.applications.find(a=>a.id===action.application);if(!a||(!admin&&a.by!==me.id))throw Error('Нельзя удалить чужую заявку');e!.applications=e!.applications.filter(x=>x.id!==a.id);releaseApplicationParts(e!,a);syncReservations(e!);const target=e!.songs.find(s=>s.id===a.song);if(target?.comments)target.comments=target.comments.filter(c=>c.readiness?.application!==a.id);break;}
- case 'consent':{const a=e!.applications.find(a=>a.id===action.application);const members=a?.members.filter(m=>m.person===(admin?action.person:me.id));if(!members?.length)throw Error('Приглашение не найдено');for(const m of members){m.consent=action.accept?'yes':'no';if(!action.accept)delete m.starred;}if(!action.accept){const song=e!.songs.find(s=>s.id===a!.song);if(e!.status==='draft'&&song)for(const m of members)for(const r of offeredSlots(song,m))if(song.main?.[r.id]?.person===m.person){delete song.main[r.id];delete song.assigned[r.id];delete song.pins[r.id];}releaseApplicationParts(e!,{...a!,members});}syncReservations(e!);syncReadinessComments(state,e!,a!);break;}
+ case 'consent':{const a=e!.applications.find(a=>a.id===action.application);const members=a?.members.filter(m=>m.person===(admin?action.person:me.id));if(!members?.length)throw Error('Приглашение не найдено');const targetSong=e!.songs.find(s=>s.id===a!.song);if(action.accept&&e!.status==='draft'&&targetSong)for(const m of members)if(m.consent==='no')assertPartAvailable(e!,targetSong,m,a!.id);for(const m of members){m.consent=action.accept?'yes':'no';if(!action.accept)delete m.starred;}if(!action.accept){const song=e!.songs.find(s=>s.id===a!.song);if(e!.status==='draft'&&song)for(const m of members)for(const r of offeredSlots(song,m))if(song.main?.[r.id]?.person===m.person){delete song.main[r.id];delete song.assigned[r.id];delete song.pins[r.id];}releaseApplicationParts(e!,{...a!,members});}syncReservations(e!);syncReadinessComments(state,e!,a!);break;}
  case 'assign':{
   if(!song||!song.slots.some(r=>r.id===action.slot))throw Error('Партия не найдена');if(action.person&&!state.people.some(p=>p.id===action.person&&!p.deletedAt&&(!p.demo||e!.demo)))throw Error('Участник не найден');
   if(song.main?.[action.slot]&&song.main[action.slot].person!==action.person&&action.replace!==true)throw Error('Основной участник закреплён. Подтвердите замену по договорённости');
