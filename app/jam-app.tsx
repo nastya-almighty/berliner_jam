@@ -213,10 +213,17 @@ function PartPicker({song,value,blocked,onChange,personName,label='Партии'
  }
  return <fieldset className="alternative-parts signup-parts">
   <legend>{label}</legend>
-  {song.slots.map(part=><div className="signup-part-row" key={part.id}><label className="checkbox-label">
-   <input type="checkbox" checked={selected.includes(part.id)} disabled={blocked?.has(part.id)&&!selected.includes(part.id)} onChange={ev=>toggle(part.id,ev.target.checked)}/>
-   <span>{part.label}{blocked?.has(part.id)?' · уже записан(а)':blocked&&song.assigned[part.id]?' · в резерв':''}</span>
-  </label>{personName&&song.assigned[part.id]&&<small className="signup-occupant">{personName(song.assigned[part.id])}</small>}</div>)}
+  {personName&&<div className="signup-occupant signup-occupant-heading">ЗАНЯТО:</div>}
+  {song.slots.map(part=>{
+   const occupant=song.assigned[part.id];
+   return <div className="signup-part-row" key={part.id}>
+    <label className="checkbox-label">
+     <input type="checkbox" checked={selected.includes(part.id)} disabled={blocked?.has(part.id)&&!selected.includes(part.id)} onChange={ev=>toggle(part.id,ev.target.checked)}/>
+     <span>{part.label}{blocked?.has(part.id)?' · уже записан(а)':blocked&&occupant?' · в резерв':''}</span>
+    </label>
+    {personName&&occupant&&<small className="signup-occupant">{personName(occupant)}</small>}
+   </div>;
+  })}
   <label className="checkbox-label"><input type="checkbox" checked={value.slot==='__any'} disabled={!!blocked?.size&&value.slot!=='__any'} onChange={ev=>onChange({slot:ev.target.checked?'__any':'',alternatives:undefined})}/>На любую</label>
   <label className="checkbox-label"><input type="checkbox" checked={value.slot==='__custom'} onChange={ev=>onChange({slot:ev.target.checked?'__custom':'',alternatives:undefined})}/>Свой инструмент</label>
  </fieldset>;
